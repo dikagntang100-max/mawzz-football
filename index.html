@@ -67,17 +67,24 @@ th{color:#35e69a}tr.mine{background:#174b38}
 <option value="2">Champions League</option>
 <option value="274">Liga Indonesia</option>
 </select>
+
 <label>Musim data pemain</label>
 <select id="season">
-<option value="2026">2026/2027</option>
-<option value="2025">2025/2026</option>
+<option value="2024" selected>2024/2025</option>
+<option value="2023">2023/2024</option>
+<option value="2022">2022/2023</option>
 </select>
+
 <button onclick="loadTeams()">🔄 AMBIL DATA KLUB</button>
+
 <label>Pilih Klub Kamu</label>
-<select id="myTeam"></select>
+<select id="myTeam">
+<option value="">-- Ambil data klub dahulu --</option>
+</select>
+
 <button onclick="newSeason()">🚀 MULAI MUSIM BARU</button>
-<div class="muted" id="apiStatus">Pilih liga lalu ambil data klub.</div>
-<div class="notice">Versi ini memakai 10 klub dari liga terpilih agar sistem karier V4 tetap memakai 18 pekan.</div>
+<div class="muted" id="apiStatus">Musim API: 2024. Pilih liga lalu ambil data klub.</div>
+<div class="notice">Paket API Free memiliki batas musim. Gunakan musim 2022–2024. Karier simulasi menggunakan 10 klub dan 18 pekan.</div>
 </div>
 
 <nav>
@@ -138,6 +145,8 @@ th{color:#35e69a}tr.mine{background:#174b38}
 <div class="footer">MAWZZ FOOTBALL SIMULATOR V5</div>
 
 <script>
+const SEASON_DEFAULT = "2024";
+
 const formations={
 "4-3-3":["GK","LB","CB","CB","RB","CM","CM","CM","LW","ST","RW"],
 "4-4-2":["GK","LB","CB","CB","RB","LM","CM","CM","RM","ST","ST"],
@@ -150,12 +159,17 @@ const formations={
 
 let teams=[],squad=[],players=[],starting=[],bench=[];
 let myTeam="",rounds=[],round=0,table={},played=[];
-let seasonStarted=false,matchRunning=false,timer=null,currentLeague="",currentSeason="2026";
+let seasonStarted=false,matchRunning=false,timer=null;
+let currentLeague="",currentSeason=SEASON_DEFAULT;
 
 async function api(url){
  const r=await fetch(url);
- const d=await r.json();
- if(!r.ok || d.error)throw new Error(d.error||"API gagal");
+ let d;
+ try{d=await r.json()}catch(e){throw new Error("Respons server bukan JSON. Periksa backend Vercel.")}
+ if(!r.ok || d.error){
+  const detail=d.details?.plan||d.details||d.error||"API gagal";
+  throw new Error(typeof detail==="string"?detail:JSON.stringify(detail));
+ }
  return d;
 }
 
@@ -164,28 +178,34 @@ async function loadTeams(){
  currentLeague=league;
  currentSeason=document.getElementById("season").value;
  const status=document.getElementById("apiStatus");
+ const select=document.getElementById("myTeam");
  status.textContent="Mengambil data klub...";
+ select.innerHTML='<option value="">Sedang memuat klub...</option>';
+ teams=[];squad=[];players=[];starting=[];bench=[];
+ document.getElementById("squadInfo").textContent="Pilih klub untuk mengambil skuad.";
  try{
-  const data=await api(`/api/football?action=teams&league=${league}&season=${currentSeason}`);
-  teams=(data.response||[]).map(x=>x.team).filter(Boolean);
-  if(!teams.length)throw new Error("Data klub kosong untuk liga/musim ini.");
-  const select=document.getElementById("myTeam");
-  select.innerHTML="";
+  const data=await api(`/api/football?action=teams&league=${encodeURIComponent(league)}&season=${encodeURIComponent(currentSeason)}`);
+  teams=(data.response||[]).map(x=>x.team).filter(t=>t&&t.id&&t.name);
+  if(!teams.length)throw new Error("Data klub kosong. Coba liga atau musim lain.");
+  select.innerHTML='<option value="">-- Pilih klub kamu --</option>';
   teams.forEach(t=>select.add(new Option(t.name,t.id)));
-  status.textContent=`Berhasil mengambil ${teams.length} klub. Pilih klub kamu.`;
-  await loadSquad();
+  status.textContent=`Berhasil mengambil ${teams.length} klub. Silakan pilih klub.`;
+  select.selectedIndex=0;
  }catch(e){
+  select.innerHTML='<option value="">-- Gagal memuat klub --</option>';
   status.textContent="Gagal: "+e.message;
  }
 }
 
 async function loadSquad(){
- const id=document.getElementById("myTeam").value;
+ const select=document.getElementById("myTeam");
+ const id=select.value;
  if(!id)return;
- const name=document.getElementById("myTeam").selectedOptions[0].text;
+ const name=select.selectedOptions[0].text;
  document.getElementById("squadInfo").textContent="Mengambil skuad "+name+"...";
+ document.getElementById("apiStatus").textContent="Memuat pemain "+name+"...";
  try{
-  const data=await api(`/api/football?action=squad&team=${id}`);
+  const data=await api(`/api/football?action=squad&team=${encodeURIComponent(id)}`);
   squad=data.response?.[0]?.players||[];
   players=squad;
   starting=players.slice(0,11).map(p=>p.id);
@@ -194,7 +214,10 @@ async function loadSquad(){
   renderFormation();
   document.getElementById("apiStatus").textContent=`Skuad ${name}: ${squad.length} pemain tersedia.`;
  }catch(e){
+  squad=[];players=[];starting=[];bench=[];
   document.getElementById("squadInfo").textContent="Gagal mengambil skuad: "+e.message;
+  document.getElementById("apiStatus").textContent="Klub berhasil dipilih, tetapi skuad gagal dimuat: "+e.message;
+  renderFormation();
  }
 }
 document.getElementById("myTeam").addEventListener("change",loadSquad);
@@ -227,10 +250,16 @@ function createSchedule(list){
 
 function newSeason(){
  if(matchRunning)return;
- if(teams.length<10){alert("Ambil data klub terlebih dahulu. Liga harus memiliki minimal 10 klub.");return;}
- myTeam=document.getElementById("myTeam").selectedOptions[0].text;
+ if(!teams.length){alert("Ambil data klub terlebih dahulu.");return;}
+ if(teams.length<10){alert("Liga ini menyediakan kurang dari 10 klub. Coba liga lain.");return;}
+ const select=document.getElementById("myTeam");
+ if(!select.value){alert("Silakan pilih klub kamu terlebih dahulu.");return;}
+ myTeam=select.selectedOptions[0].text;
  const chosen=teams.slice(0,10).map(t=>t.name);
- if(!chosen.includes(myTeam)){alert("Klub tidak masuk dalam 10 klub musim ini.");return;}
+ if(!chosen.includes(myTeam)){
+  alert("Klub tidak masuk dalam 10 klub yang digunakan untuk simulasi.");
+  return;
+ }
  table={};
  chosen.forEach(t=>table[t]={mp:0,w:0,d:0,l:0,gf:0,ga:0,pts:0});
  rounds=createSchedule(chosen);
@@ -278,6 +307,7 @@ function nextMatchday(){
  <div class="score" id="liveScore">0 - 0</div>
  <div id="minute">MENIT 0'</div><div id="clock">00:00 / 00:30</div>`;
  document.getElementById("progress").style.width="0%";
+ let liveHome=0,liveAway=0;
  timer=setInterval(()=>{
   elapsed++;
   let minute=Math.min(90,Math.floor(elapsed/30*90));
@@ -285,7 +315,9 @@ function nextMatchday(){
   document.getElementById("minute").textContent="MENIT "+minute+"'";
   document.getElementById("progress").style.width=elapsed/30*100+"%";
   events.filter(e=>e.time===elapsed).forEach(e=>{
+   if(e.text.includes(user.home))liveHome++;else liveAway++;
    document.getElementById("liveEvents").innerHTML+=`<div class="event">${e.min}' ${e.text}</div>`;
+   document.getElementById("liveScore").textContent=liveHome+" - "+liveAway;
   });
   if(elapsed>=30){
    clearInterval(timer);matchRunning=false;
@@ -346,8 +378,13 @@ function renderFormation(){
  starting.forEach((id,i)=>{let el=document.getElementById("p"+i);if(el)el.value=id;});
 }
 function saveFormation(){
- starting=formations[document.getElementById("formationSelect").value].map((p,i)=>Number(document.getElementById("p"+i).value));
- if(new Set(starting).size!==11){alert("Pilih 11 pemain yang berbeda.");return;}
+ if(players.length<11){alert("Skuad belum tersedia atau pemain kurang dari 11.");return;}
+ let selected=formations[document.getElementById("formationSelect").value].map((p,i)=>{
+  const el=document.getElementById("p"+i);
+  return el?Number(el.value):0;
+ });
+ if(selected.some(id=>!id)||new Set(selected).size!==11){alert("Pilih 11 pemain yang berbeda.");return;}
+ starting=selected;
  bench=players.filter(p=>!starting.includes(p.id)).slice(0,7).map(p=>p.id);
  alert("Formasi dan pemain utama berhasil disimpan!");
  renderSquad();
@@ -370,6 +407,8 @@ function renderSquad(){
  <h4>📋 PEMAIN LAINNYA</h4>
  ${squad.filter(p=>!starting.includes(p.id)&&!bench.includes(p.id)).map(row).join("")}`;
 }
+
+renderFormation();
 </script>
 </body>
 </html>
