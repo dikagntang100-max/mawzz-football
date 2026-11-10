@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>MAWZZ FOOTBALL V7</title>
+<title>MAWZZ FOOTBALL V8</title>
 <style>
 *{box-sizing:border-box}
 body{margin:0;background:#080e17;color:white;font-family:Arial}
@@ -49,14 +49,26 @@ th{color:#35e69a}tr.mine{background:#174b38}
 .gold{color:#ffdc8a}
 details summary{color:#35e69a;cursor:pointer;padding:8px}
 .pitchplayer{background:#eafff2;color:#12432b;border-radius:7px;padding:7px 5px;text-align:center;font-size:10px;min-width:65px;max-width:110px;overflow-wrap:anywhere;flex:1}
-.pitchplayer b{display:block;font-size:11px}
-@media(max-width:500px){.gridplayers{grid-template-columns:1fr}nav button{font-size:11px;padding:11px 4px}.pitchplayer{min-width:0}}
+.halftime{background:#392d16;border:1px solid #80652b;padding:13px;border-radius:10px;margin-top:15px;text-align:left}
+.halftime h3{color:#ffdc8a;text-align:center}
+.subgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.subgrid select{min-width:0}
+.subbutton{background:#d18b25;color:#17110a}
+.substatus{font-size:12px;color:#ffdc8a;margin-top:8px}
+.roster{background:#192b3d;border-radius:8px;padding:10px;margin:8px 0;font-size:12px}
+.roster b{color:#35e69a}
+@media(max-width:500px){
+ .gridplayers{grid-template-columns:1fr}
+ nav button{font-size:11px;padding:11px 4px}
+ .pitchplayer{min-width:0}
+ .subgrid{grid-template-columns:1fr}
+}
 </style>
 </head>
 <body>
 <header>
 <h1>⚽ MAWZZ FOOTBALL</h1>
-<p>REAL CLUB LINEUP • CAREER SIMULATOR V7</p>
+<p>REAL CLUB LINEUP • CAREER SIMULATOR V8</p>
 </header>
 
 <div class="container">
@@ -84,7 +96,7 @@ details summary{color:#35e69a;cursor:pointer;padding:8px}
 <select id="myTeam"><option value="">Ambil data klub dahulu</option></select>
 <button onclick="newSeason()">🚀 MULAI MUSIM BARU</button>
 <div class="muted" id="apiStatus">API Football • Season 2024</div>
-<div class="notice">Lineup asli digunakan jika tersedia. Jika tidak, aplikasi menampilkan 11 pemain dari skuad sebagai susunan perkiraan. Hasil pertandingan adalah simulasi.</div>
+<div class="notice">Half-time berlangsung 15 detik. Pergantian pemain hanya bisa dilakukan saat jeda. Pemain yang sudah terlibat pergantian tidak bisa diganti lagi pada pertandingan yang sama.</div>
 </div>
 
 <nav>
@@ -148,14 +160,24 @@ details summary{color:#35e69a;cursor:pointer;padding:8px}
 </div>
 </section>
 </div>
-<div class="footer">MAWZZ FOOTBALL V7 • REAL CLUB LINEUP</div>
+<div class="footer">MAWZZ FOOTBALL V8 • SUBSTITUTION SYSTEM</div>
 
 <script>
 let teams=[],myTeam="",myTeamId="",squad=[],realLineup=null;
 let squadCache={};
 let rounds=[],round=0,table={},played=[];
-let seasonStarted=false,matchRunning=false,timer=null;
+let seasonStarted=false,matchRunning=false,timer=null,halfTimer=null;
 let qualifiedTeams=[],uclPlayed=false;
+
+let currentMatch=null;
+let matchElapsed=0;
+let halftimeRemaining=15;
+let matchRoster=[];
+let benchRoster=[];
+let lockedPlayers=new Set();
+let usedBench=new Set();
+let matchEvents=[];
+let matchResults=[];
 
 async function api(url){
  const r=await fetch(url);
@@ -295,25 +317,19 @@ function renderRealPitch(){
 function fallbackPitch(){
  if(!squad.length)return "Belum ada data pemain.";
  const available=squad.filter(p=>p.name);
- const pick=(pos)=>available.filter(p=>String(p.position||p.pos||"").toLowerCase().includes(pos));
  const used=new Set();
  function take(pos,count){
-  let list=pick(pos).filter(p=>!used.has(p.id||p.name));
+  let list=available.filter(p=>String(p.position||p.pos||"").toLowerCase().includes(pos)&&!used.has(p.id||p.name));
   while(list.length<count){
    const next=available.find(p=>!used.has(p.id||p.name));
    if(!next)break;
    list.push(next);
   }
   return list.slice(0,count).map(p=>{
-   used.add(p.id||p.name);
-   return p;
+   used.add(p.id||p.name);return p;
   });
  }
- const gk=take("goalkeeper",1);
- const def=take("defender",4);
- const mid=take("midfielder",3);
- const att=take("attacker",3);
- const rows=[att,mid,def,gk];
+ const rows=[take("attacker",3),take("midfielder",3),take("defender",4),take("goalkeeper",1)];
  return rows.map(row=>`<div class="line">${row.map(p=>`
  <div class="pitchplayer"><b>${p.number||""} ${p.name}</b>${p.position||p.pos||""}</div>`).join("")}</div>`).join("");
 }
@@ -372,7 +388,6 @@ async function newSeason(){
  document.getElementById("apiStatus").textContent="Menyiapkan data skuad klub...";
  renderTable();renderFixtures();renderResults();
 
- // Muat skuad semua klub simulasi agar pencetak gol kedua tim punya nama.
  const selected=teams.filter(t=>chosen.includes(t.name));
  await Promise.all(selected.map(t=>getTeamSquad(t.id)));
  document.getElementById("apiStatus").textContent="Data skuad simulasi siap.";
@@ -387,25 +402,23 @@ function goals(){
 
 function getScorer(team){
  let list=[];
- if(team===myTeam&&realLineup?.startXI?.length){
-  list=realLineup.startXI.map(x=>x.player||x).filter(p=>p.name&&!/goalkeeper/i.test(p.pos||p.position||""));
+ if(team===myTeam&&matchRoster.length){
+  list=matchRoster.filter(p=>p.active&&!/goalkeeper/i.test(p.position||p.pos||""));
  }
  if(!list.length){
   const club=teams.find(t=>t.name===team);
   const players=club?(squadCache[club.id]||[]):[];
   list=players.filter(p=>p.name&&!/goalkeeper/i.test(p.position||p.pos||""));
  }
- if(!list.length){
-  // Nama cadangan agar tidak menampilkan label generik "Pemain [klub]".
-  return team+" FC";
- }
+ if(!list.length)return "Pemain "+team;
  return list[Math.floor(Math.random()*list.length)].name;
 }
 
 function simulate(home,away){
- const hg=goals(),ag=goals(),events=[];
- for(let i=0;i<hg;i++)events.push({min:Math.floor(Math.random()*90)+1,team:home,scorer:getScorer(home)});
- for(let i=0;i<ag;i++)events.push({min:Math.floor(Math.random()*90)+1,team:away,scorer:getScorer(away)});
+ const hg=goals(),ag=goals();
+ const events=[];
+ for(let i=0;i<hg;i++)events.push({min:Math.floor(Math.random()*90)+1,team:home,scorer:null});
+ for(let i=0;i<ag;i++)events.push({min:Math.floor(Math.random()*90)+1,team:away,scorer:null});
  events.sort((a,b)=>a.min-b.min);
  const poss=40+Math.floor(Math.random()*21),hs=5+Math.floor(Math.random()*15),as=5+Math.floor(Math.random()*15);
  return {home,away,hg,ag,events,stats:{
@@ -416,6 +429,283 @@ function simulate(home,away){
   yellow:[Math.floor(Math.random()*4),Math.floor(Math.random()*4)],
   red:[Math.random()<.08?1:0,Math.random()<.08?1:0]
  }};
+}
+
+function makePlayer(p){
+ const x=p.player||p;
+ return {
+  id:String(x.id||x.name||Math.random()),
+  name:x.name||"Pemain",
+  number:x.number??"-",
+  position:x.pos||x.position||"-",
+  photo:x.photo||"",
+  active:false,
+  source:""
+ };
+}
+
+function prepareMatchRoster(){
+ matchRoster=[];
+ benchRoster=[];
+ lockedPlayers=new Set();
+ usedBench=new Set();
+
+ let starters=[],subs=[];
+
+ if(realLineup?.startXI?.length){
+  starters=realLineup.startXI.map(makePlayer);
+  subs=(realLineup.substitutes||[]).map(makePlayer);
+ }
+
+ const all=squad.map(makePlayer);
+ const starterNames=new Set(starters.map(p=>p.name));
+ const subNames=new Set(subs.map(p=>p.name));
+
+ if(starters.length<11){
+  starters=[];
+  const used=new Set();
+  const preferred=[
+   ...all.filter(p=>/goalkeeper/i.test(p.position)),
+   ...all.filter(p=>/defender/i.test(p.position)),
+   ...all.filter(p=>/midfielder/i.test(p.position)),
+   ...all.filter(p=>/attacker|forward/i.test(p.position)),
+   ...all
+  ];
+  for(const p of preferred){
+   if(!used.has(p.name)&&starters.length<11){
+    starters.push({...p});used.add(p.name);
+   }
+  }
+ }
+
+ if(!subs.length){
+  const used=new Set(starters.map(p=>p.name));
+  subs=all.filter(p=>!used.has(p.name)).slice(0,9);
+ }else{
+  const used=new Set([...starterNames,...subNames]);
+  const extra=all.filter(p=>!used.has(p.name));
+  subs=[...subs,...extra].slice(0,12);
+ }
+
+ matchRoster=starters.slice(0,11).map(p=>({...p,active:true,source:"starter"}));
+ benchRoster=subs.map(p=>({...p,active:false,source:"bench"}));
+}
+
+function renderMatchRoster(){
+ const starters=matchRoster.filter(p=>p.active);
+ const bench=benchRoster.filter(p=>!usedBench.has(p.id));
+ return `
+ <div class="roster">
+ <b>⭐ PEMAIN INTI DI LAPANGAN</b><br>
+ ${starters.map((p,i)=>(i+1)+". "+p.name+" ("+p.position+")").join("<br>")}
+ </div>
+ <div class="roster">
+ <b>🪑 CADANGAN TERSEDIA</b><br>
+ ${bench.length?bench.map(p=>p.name+" ("+p.position+")").join("<br>"):"Tidak ada pemain cadangan tersedia."}
+ </div>`;
+}
+
+function renderHalftime(){
+ const panel=document.getElementById("halftimePanel");
+ if(!panel)return;
+ const eligible=matchRoster.filter(p=>p.active&&!lockedPlayers.has(p.id));
+ const available=benchRoster.filter(p=>!usedBench.has(p.id));
+ panel.innerHTML=`
+ <div class="halftime">
+  <h3>⏸ HALF-TIME</h3>
+  <div style="text-align:center;font-size:28px;font-weight:bold" id="halfCountdown">${halftimeRemaining}</div>
+  <p class="muted" style="text-align:center">Detik tersisa untuk pergantian pemain</p>
+  <div class="subgrid">
+   <div>
+    <label>🔴 Pemain keluar</label>
+    <select id="subOut">
+     <option value="">-- Pilih pemain inti --</option>
+     ${eligible.map(p=>`<option value="${escapeAttr(p.id)}">${escapeHTML(p.name)}</option>`).join("")}
+    </select>
+   </div>
+   <div>
+    <label>🟢 Pemain masuk</label>
+    <select id="subIn">
+     <option value="">-- Pilih pemain cadangan --</option>
+     ${available.map(p=>`<option value="${escapeAttr(p.id)}">${escapeHTML(p.name)}</option>`).join("")}
+    </select>
+   </div>
+  </div>
+  <button class="subbutton" onclick="makeSubstitution()">🔁 KONFIRMASI PERGANTIAN</button>
+  <div class="substatus" id="subStatus">Pilih pemain yang keluar dan pemain pengganti.</div>
+  ${renderMatchRoster()}
+ </div>`;
+}
+
+function escapeHTML(s){
+ return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+function escapeAttr(s){return escapeHTML(s);}
+
+function makeSubstitution(){
+ if(halftimeRemaining<=0)return;
+ const outId=document.getElementById("subOut")?.value;
+ const inId=document.getElementById("subIn")?.value;
+ const status=document.getElementById("subStatus");
+ if(!outId||!inId){status.textContent="Pilih kedua pemain terlebih dahulu.";return;}
+
+ const outgoing=matchRoster.find(p=>p.id===outId&&p.active);
+ const incoming=benchRoster.find(p=>p.id===inId&&!usedBench.has(p.id));
+
+ if(!outgoing||!incoming){status.textContent="Pemain tidak tersedia.";return;}
+ if(lockedPlayers.has(outgoing.id)||usedBench.has(incoming.id)){
+  status.textContent="Pemain tersebut sudah terlibat pergantian.";return;
+ }
+
+ outgoing.active=false;
+ outgoing.source="subbed-out";
+ incoming.active=true;
+ incoming.source="subbed-in";
+
+ // Pemain yang sudah keluar dan pemain yang baru masuk dikunci
+ // agar keduanya tidak bisa dipilih lagi pada pertandingan ini.
+ lockedPlayers.add(outgoing.id);
+ lockedPlayers.add(incoming.id);
+ usedBench.add(incoming.id);
+
+ status.textContent="✅ "+outgoing.name+" keluar, "+incoming.name+" masuk.";
+ renderHalftime();
+ const newStatus=document.getElementById("subStatus");
+ if(newStatus)newStatus.textContent="✅ Pergantian berhasil: "+outgoing.name+" keluar, "+incoming.name+" masuk.";
+}
+
+function updateLiveScore(){
+ const score=document.getElementById("liveScore");
+ if(score)score.textContent=currentMatch.liveH+" - "+currentMatch.liveA;
+}
+
+function showLiveMatch(){
+ const user=currentMatch.user;
+ document.getElementById("userMatch").innerHTML=`
+ <div class="status" id="matchStatus">🔴 LIVE MATCH</div>
+ <div class="teams"><div class="team">${user.home}</div><div class="team">${user.away}</div></div>
+ <div class="score" id="liveScore">${currentMatch.liveH} - ${currentMatch.liveA}</div>
+ <div id="minute">MENIT ${Math.min(90,matchElapsed*3)}'</div>
+ <div id="clock">00:${String(matchElapsed).padStart(2,"0")} / 00:30</div>
+ <div id="halftimePanel"></div>`;
+}
+
+function startMatchClock(){
+ timer=setInterval(()=>{
+  matchElapsed++;
+  const minute=Math.min(90,matchElapsed*3);
+  const clock=document.getElementById("clock");
+  const minuteBox=document.getElementById("minute");
+  const progress=document.getElementById("progress");
+  if(clock)clock.textContent="00:"+String(matchElapsed).padStart(2,"0")+" / 00:30";
+  if(minuteBox)minuteBox.textContent="MENIT "+minute+"'";
+  if(progress)progress.style.width=(matchElapsed/30*100)+"%";
+
+  // Gol ditentukan berdasarkan menit simulasi.
+  matchEvents.filter(e=>e.time===matchElapsed&&!e.done).forEach(e=>{
+   e.done=true;
+   const scorer=getScorer(e.team);
+   if(e.team===currentMatch.user.home)currentMatch.liveH++;
+   else currentMatch.liveA++;
+   updateLiveScore();
+   document.getElementById("liveEvents").innerHTML+=
+    `<div class="event">⚽ ${e.min}' — <b>${escapeHTML(scorer)}</b> <span class="muted">(${escapeHTML(e.team)})</span></div>`;
+  });
+
+  if(matchElapsed===15){
+   clearInterval(timer);
+   startHalfTime();
+   return;
+  }
+  if(matchElapsed>=30){
+   finishMatch();
+  }
+ },1000);
+}
+
+function startHalfTime(){
+ halftimeRemaining=15;
+ const status=document.getElementById("matchStatus");
+ if(status)status.textContent="⏸ HALF-TIME • JEDA 15 DETIK";
+ renderHalftime();
+
+ halfTimer=setInterval(()=>{
+  halftimeRemaining--;
+  const countdown=document.getElementById("halfCountdown");
+  if(countdown)countdown.textContent=halftimeRemaining;
+
+  if(halftimeRemaining<=0){
+   clearInterval(halfTimer);
+   const panel=document.getElementById("halftimePanel");
+   if(panel)panel.innerHTML='<div class="notice">⏱ Jeda selesai. Babak kedua dimulai!</div>';
+   const s=document.getElementById("matchStatus");
+   if(s)s.textContent="🔴 BABAK KEDUA";
+   setTimeout(()=>{
+    const p=document.getElementById("halftimePanel");
+    if(p)p.innerHTML="";
+    startMatchClock();
+   },500);
+  }
+ },1000);
+}
+
+function finishMatch(){
+ clearInterval(timer);
+ clearInterval(halfTimer);
+ matchRunning=false;
+
+ const results=matchResults;
+ const user=currentMatch.user;
+ results.forEach(g=>{updateTable(g);played.push(g)});
+ round++;
+
+ document.getElementById("userMatch").innerHTML=`
+ <div class="status">🏁 FULL TIME</div>
+ <div class="teams"><div class="team">${user.home}</div><div class="team">${user.away}</div></div>
+ <div class="score">${user.hg} - ${user.ag}</div>
+ <h4>PENCETAK GOL</h4>${scorersHTML(user)}
+ <h4>⭐ SUSUNAN AKHIR PEMAIN</h4>
+ ${renderMatchRoster()}`;
+ document.getElementById("matchStats").innerHTML=statsHTML(user);
+ document.getElementById("weekResults").innerHTML=results.map(g=>
+  `<div class="fixture">${g.home} <strong>${g.hg} - ${g.ag}</strong> ${g.away}</div>`).join("");
+ document.getElementById("careerInfo").textContent=myTeam+" • "+round+"/18 pekan • Posisi "+position();
+ document.getElementById("nextBtn").disabled=round>=18;
+ renderTable();renderFixtures();renderResults();
+
+ if(round===18){
+  qualifiedTeams=sorted().slice(0,2).map(x=>x[0]);
+  document.getElementById("uclBtn").disabled=false;
+  renderUCL();
+  alert("Musim selesai! Dua klub teratas lolos ke UCL simulasi.");
+ }
+}
+
+function nextMatchday(){
+ if(!seasonStarted||matchRunning)return;
+ if(round>=18)return;
+
+ matchRunning=true;
+ document.getElementById("nextBtn").disabled=true;
+
+ matchResults=rounds[round].map(g=>simulate(g.home,g.away));
+ const user=matchResults.find(g=>g.home===myTeam||g.away===myTeam);
+
+ // Siapkan starting XI dan pemain cadangan untuk pertandingan klub pengguna.
+ prepareMatchRoster();
+
+ matchElapsed=0;
+ currentMatch={user,liveH:0,liveA:0};
+ matchEvents=user.events.map(e=>({
+  ...e,
+  time:Math.max(1,Math.ceil(e.min/3)),
+  done:false
+ }));
+
+ document.getElementById("liveEvents").innerHTML="";
+ document.getElementById("progress").style.width="0%";
+ showLiveMatch();
+ startMatchClock();
 }
 
 function updateTable(g){
@@ -430,6 +720,7 @@ function sorted(){
  (b[1].gf-b[1].ga)-(a[1].gf-a[1].ga)||b[1].gf-a[1].gf);
 }
 function position(){return sorted().findIndex(x=>x[0]===myTeam)+1}
+
 function statsHTML(g){
  const s=g.stats,rows=[
  ["Penguasaan bola",s.possession[0]+"%",s.possession[1]+"%"],
@@ -445,59 +736,7 @@ function statsHTML(g){
 }
 function scorersHTML(g){
  if(!g.events.length)return "Tidak ada gol.";
- return g.events.map(e=>`<div class="event">⚽ ${e.min}' — <b>${e.scorer}</b> <span class="muted">(${e.team})</span></div>`).join("");
-}
-
-function nextMatchday(){
- if(!seasonStarted||matchRunning)return;
- if(round>=18)return;
- matchRunning=true;
- document.getElementById("nextBtn").disabled=true;
- const results=rounds[round].map(g=>simulate(g.home,g.away));
- const user=results.find(g=>g.home===myTeam||g.away===myTeam);
- let elapsed=0,liveH=0,liveA=0;
- const events=user.events.map(e=>({...e,time:Math.max(1,Math.ceil(e.min/3))}));
- document.getElementById("liveEvents").innerHTML="";
- document.getElementById("userMatch").innerHTML=`
- <div class="status">🔴 LIVE MATCH</div>
- <div class="teams"><div class="team">${user.home}</div><div class="team">${user.away}</div></div>
- <div class="score" id="liveScore">0 - 0</div>
- <div id="minute">MENIT 0'</div><div id="clock">00:00 / 00:30</div>`;
- document.getElementById("progress").style.width="0%";
- timer=setInterval(()=>{
-  elapsed++;
-  const minute=Math.min(90,elapsed*3);
-  document.getElementById("clock").textContent="00:"+String(elapsed).padStart(2,"0")+" / 00:30";
-  document.getElementById("minute").textContent="MENIT "+minute+"'";
-  document.getElementById("progress").style.width=elapsed/30*100+"%";
-  events.filter(e=>e.time===elapsed).forEach(e=>{
-   if(e.team===user.home)liveH++;else liveA++;
-   document.getElementById("liveScore").textContent=liveH+" - "+liveA;
-   document.getElementById("liveEvents").innerHTML+=`<div class="event">⚽ ${e.min}' — <b>${e.scorer}</b> (${e.team})</div>`;
-  });
-  if(elapsed>=30){
-   clearInterval(timer);matchRunning=false;
-   results.forEach(g=>{updateTable(g);played.push(g)});
-   round++;
-   document.getElementById("userMatch").innerHTML=`
-    <div class="status">🏁 FULL TIME</div>
-    <div class="teams"><div class="team">${user.home}</div><div class="team">${user.away}</div></div>
-    <div class="score">${user.hg} - ${user.ag}</div>
-    <h4>PENCETAK GOL</h4>${scorersHTML(user)}`;
-   document.getElementById("matchStats").innerHTML=statsHTML(user);
-   document.getElementById("weekResults").innerHTML=results.map(g=>
-    `<div class="fixture">${g.home} <strong>${g.hg} - ${g.ag}</strong> ${g.away}</div>`).join("");
-   document.getElementById("careerInfo").textContent=myTeam+" • "+round+"/18 pekan • Posisi "+position();
-   document.getElementById("nextBtn").disabled=round>=18;
-   renderTable();renderFixtures();renderResults();
-   if(round===18){
-    qualifiedTeams=sorted().slice(0,2).map(x=>x[0]);
-    document.getElementById("uclBtn").disabled=false;
-    renderUCL();
-    alert("Musim selesai! Dua klub teratas lolos ke UCL simulasi.");
-   }
-  }
- },1000);
+ return g.events.map(e=>`<div class="event">⚽ ${e.min}' — <b>${escapeHTML(e.scorer||"Pemain")}</b> <span class="muted">(${escapeHTML(e.team)})</span></div>`).join("");
 }
 
 function renderTable(){
@@ -538,6 +777,8 @@ function startUCL(){
  if(qualifiedTeams.length!==2)return;
  if(uclPlayed)return alert("Final UCL sudah dimainkan.");
  const a=qualifiedTeams[0],b=qualifiedTeams[1],g=simulate(a,b);
+ // Nama pencetak gol final diambil dari skuad yang tersedia.
+ g.events.forEach(e=>e.scorer=getScorer(e.team));
  uclPlayed=true;
  document.getElementById("uclMatch").innerHTML=`
  <div class="scoreboard"><div class="status">🏆 UCL FINAL</div>
